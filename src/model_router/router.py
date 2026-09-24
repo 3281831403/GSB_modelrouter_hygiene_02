@@ -49,26 +49,34 @@ class Router:
             unknown = [m for m in models if m not in catalog]
             if unknown:
                 raise UnknownModelError(f"Not in OpenRouter catalog: {unknown}")
-            self.models = [catalog[m] for m in models]
+            found = [catalog[m] for m in models]
         else:
-            self.models = []
+            found = []
             for p in providers:
-                found = provider_models(catalog, p, models_per_provider)
-                if not found:
+                picked = provider_models(catalog, p, models_per_provider)
+                if not picked:
                     raise UnknownModelError(f"No models found for provider '{p}'")
-                self.models += found
+                found += picked
+        # A model reachable twice (listed twice, expanded via a repeated provider, or listed both ways)
+        # is sent once; the first occurrence wins, so candidate ordering is unchanged.
+        seen = set()
+        self.models = [m for m in found if m.id not in seen and not seen.add(m.id)]
 
     def api_key_for(self, model_id):
         """The API key you passed for this model's provider, or None."""
         return self.provider_keys.get(model_id.split("/", 1)[0])
 
     def _reject_reason(self, m, in_tokens, limits):
+        if not m.context_length_known:
+            return "context length unknown (catalog provides none)"
         if m.context_length < in_tokens + limits.output_tokens:
             return f"context {m.context_length} < {in_tokens + limits.output_tokens} tokens"
         if m.max_output_tokens is not None and m.max_output_tokens < limits.output_tokens:
             return f"max output {m.max_output_tokens} < {limits.output_tokens} tokens"
         if limits.max_cost_usd is not None:
             cost = m.cost(in_tokens, limits.output_tokens)
+            if cost is None:
+                return "cost unknown (catalog price unknown)"
             if cost > limits.max_cost_usd:
                 return f"cost ${cost:.6f} > ${limits.max_cost_usd}"
         return None
